@@ -324,9 +324,15 @@ actor BitwardenAPI {
         return []
     }
 
+    /// 캐시 무효화 + Bitwarden 클라우드 동기화
     func invalidateCache() {
         cachedItems = nil
         cacheTimestamp = nil
+
+        // bw serve에 클라우드 동기화 요청
+        if isServing {
+            httpPostSync(path: "/sync")
+        }
     }
 
     // MARK: - HTTP 클라이언트 (동기)
@@ -334,6 +340,28 @@ actor BitwardenAPI {
     private func httpGetSync(path: String) -> Data? {
         guard let url = URL(string: baseURL + path) else { return nil }
         let request = URLRequest(url: url)
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var result: Data?
+
+        urlSession.dataTask(with: request) { data, response, _ in
+            if let data = data,
+               let httpResponse = response as? HTTPURLResponse,
+               httpResponse.statusCode == 200 {
+                result = data
+            }
+            semaphore.signal()
+        }.resume()
+
+        semaphore.wait()
+        return result
+    }
+
+    @discardableResult
+    private func httpPostSync(path: String) -> Data? {
+        guard let url = URL(string: baseURL + path) else { return nil }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
 
         let semaphore = DispatchSemaphore(value: 0)
         var result: Data?

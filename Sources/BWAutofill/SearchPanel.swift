@@ -76,9 +76,6 @@ class SearchPanelController {
             AppContextDetector.guessServiceName(from: $0.bundleIdentifier)
         } ?? ""
 
-        // 패널 열 때마다 캐시 무효화 → 최신 데이터 로드
-        Task { await bitwardenAPI.invalidateCache() }
-
         let viewModel = SearchViewModel(
             bitwardenAPI: bitwardenAPI,
             initialSearch: initialSearch,
@@ -95,10 +92,14 @@ class SearchPanelController {
         self.panel = panel
         self.hostingView = hostingView
 
-        // ESC 이벤트 모니터 (컨트롤러에서 1개만 관리)
-        escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        // 키보드 이벤트 모니터 (ESC + Cmd+R)
+        escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak viewModel] event in
             if event.keyCode == 53 { // ESC
                 self?.hide()
+                return nil
+            }
+            if event.modifierFlags.contains(.command) && event.charactersIgnoringModifiers == "r" {
+                viewModel?.refresh()
                 return nil
             }
             return event
@@ -106,9 +107,10 @@ class SearchPanelController {
 
         panel.makeKeyAndOrderFront(nil)
 
-        // 초기 검색 실행
-        if !initialSearch.isEmpty {
-            Task {
+        // 캐시 무효화 후 초기 검색 (순서 보장)
+        Task {
+            await bitwardenAPI.invalidateCache()
+            if !initialSearch.isEmpty {
                 await viewModel.search()
             }
         }
@@ -232,8 +234,6 @@ struct SearchView: View {
                 viewModel.moveDown()
             }, onEscape: {
                 viewModel.dismiss()
-            }, onRefresh: {
-                viewModel.refresh()
             })
             .padding(12)
 
@@ -310,17 +310,15 @@ struct SearchInputView: NSViewRepresentable {
     let onMoveUp: () -> Void
     let onMoveDown: () -> Void
     let onEscape: () -> Void
-    let onRefresh: () -> Void
 
-    func makeNSView(context: Context) -> SearchTextField {
-        let field = SearchTextField()
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField()
         field.placeholderString = "검색... (⌘R 새로고침)"
         field.isBordered = false
         field.backgroundColor = .clear
         field.font = .systemFont(ofSize: 18, weight: .light)
         field.focusRingType = .none
         field.delegate = context.coordinator
-        field.onRefresh = onRefresh
 
         DispatchQueue.main.async {
             field.window?.makeFirstResponder(field)
@@ -328,7 +326,7 @@ struct SearchInputView: NSViewRepresentable {
         return field
     }
 
-    func updateNSView(_ nsView: SearchTextField, context: Context) {
+    func updateNSView(_ nsView: NSTextField, context: Context) {
         if nsView.stringValue != query {
             nsView.stringValue = query
         }
@@ -462,19 +460,6 @@ struct CopyButton: View {
         .clipShape(RoundedRectangle(cornerRadius: 4))
         .contentShape(Rectangle())
         .onTapGesture { onCopy() }
-    }
-}
-
-/// Cmd+R 감지를 위한 커스텀 텍스트필드
-class SearchTextField: NSTextField {
-    var onRefresh: (() -> Void)?
-
-    override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if event.modifierFlags.contains(.command) && event.charactersIgnoringModifiers == "r" {
-            onRefresh?()
-            return true
-        }
-        return super.performKeyEquivalent(with: event)
     }
 }
 
