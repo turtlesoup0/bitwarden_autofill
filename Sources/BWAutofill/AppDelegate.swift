@@ -101,73 +101,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - 로그인
+    // MARK: - 로그인 (터미널 안내)
 
     @objc private func loginVaultMenu() {
-        Task { await loginVault() }
+        showLoginGuide()
     }
 
-    private func loginVault() async {
-        guard let api = bwAPI else { return }
+    private func showLoginGuide() {
+        let alert = NSAlert()
+        alert.messageText = "Bitwarden 로그인 필요"
+        alert.informativeText = "터미널에서 아래 명령어를 실행하세요:\n\nbw login\n\n로그인 완료 후 Cmd+\\ 를 누르면 자동으로 연결됩니다."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "확인")
+        alert.addButton(withTitle: "터미널 열기")
 
-        // 1단계: 이메일
-        guard let email = promptText(
-            message: "Bitwarden 로그인",
-            info: "이메일 주소를 입력하세요",
-            placeholder: "email@example.com",
-            secure: false
-        ), !email.isEmpty else { return }
-
-        // 2단계: 마스터 비밀번호
-        guard let password = promptText(
-            message: "Bitwarden 로그인",
-            info: "마스터 비밀번호를 입력하세요",
-            placeholder: "",
-            secure: true
-        ), !password.isEmpty else { return }
-
-        // 3단계: OTP 입력 (제출 직전에 확인 — TOTP 시간 유효성)
-        guard let code = promptText(
-            message: "2단계 인증",
-            info: "인증 앱의 6자리 코드를 입력하세요\n(2FA 미사용 시 빈 칸으로 확인)",
-            placeholder: "000000",
-            secure: false
-        ) else { return }
-
-        let result: BitwardenAPI.LoginResult
-        if code.isEmpty {
-            result = await api.login(email: email, password: password)
-        } else {
-            result = await api.login(email: email, password: password, twoFactorCode: code)
+        let response = alert.runModal()
+        if response == .alertSecondButtonReturn {
+            // 터미널 열기
+            NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app"))
         }
-
-        switch result {
-        case .success(let token):
-            let _ = await api.startServe(sessionToken: token)
-            showSearchPanel()
-
-        case .requires2FA:
-            // OTP 없이 시도했으나 2FA 필요 → 재입력
-            guard let retryCode = promptText(
-                message: "2단계 인증 필요",
-                info: "인증 앱의 6자리 코드를 입력하세요",
-                placeholder: "000000",
-                secure: false
-            ), !retryCode.isEmpty else { return }
-
-            let retryResult = await api.login(email: email, password: password, twoFactorCode: retryCode)
-            if case .success(let token) = retryResult {
-                let _ = await api.startServe(sessionToken: token)
-                showSearchPanel()
-            } else {
-                showAlert(title: "로그인 실패", message: "2FA 코드가 올바르지 않습니다.")
-            }
-
-        case .failed(let message):
-            showAlert(title: "로그인 실패", message: message)
-        }
-
-        await updateStatus()
     }
 
     // MARK: - 잠금 해제
@@ -247,7 +199,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let status = await api.getStatus()
             switch status {
             case .unauthenticated:
-                await loginVault()
+                showLoginGuide()
 
             case .locked:
                 if let token = await unlockVault() {

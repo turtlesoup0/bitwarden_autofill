@@ -202,47 +202,7 @@ actor BitwardenAPI {
         }
     }
 
-    // MARK: - 로그인 / 잠금해제
-
-    enum LoginResult {
-        case success(sessionToken: String)
-        case requires2FA
-        case failed(String)
-    }
-
-    /// bw login (비밀번호는 BW_PASSWORD 환경변수로 전달 — CLI가 inquirer.js 대화형 프롬프트를 사용하므로 stdin 불가)
-    func login(email: String, password: String, twoFactorCode: String? = nil) -> LoginResult {
-        _ = runCLI(["logout"])
-
-        var args: [String]
-        if let code = twoFactorCode {
-            args = ["login", email, "--passwordenv", "BW_PASSWORD", "--method", "0", "--code", code, "--raw"]
-        } else {
-            args = ["login", email, "--passwordenv", "BW_PASSWORD", "--raw"]
-        }
-
-        let (stdout, stderr, exitCode) = runCLI(args, passwordEnv: password)
-        let output = stdout?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let errorOutput = stderr?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-        // 2FA 필요 감지: CLI가 OTP를 대화형으로 요구하다 crash하는 경우도 포함
-        let combinedOutput = output + " " + errorOutput
-        if combinedOutput.contains("Two-step") || combinedOutput.contains("two-step")
-            || combinedOutput.contains("Additional authentication")
-            || combinedOutput.contains("ERR_USE_AFTER_CLOSE") {
-            return .requires2FA
-        }
-
-        // exit code 기반 성공 판정
-        if exitCode == 0 && !output.isEmpty {
-            sessionToken = output
-            _ = SecurityManager.saveSessionToken(output)
-            return .success(sessionToken: output)
-        }
-
-        let errorMsg = errorOutput.isEmpty ? (output.isEmpty ? "알 수 없는 오류" : output) : errorOutput
-        return .failed(errorMsg)
-    }
+    // MARK: - 잠금해제 (로그인은 터미널에서 `bw login` 직접 수행)
 
     /// bw unlock (비밀번호는 BW_PASSWORD 환경변수로 전달) → 세션 토큰 반환
     func unlock(password: String) -> String? {
