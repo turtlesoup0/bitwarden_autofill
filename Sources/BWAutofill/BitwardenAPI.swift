@@ -210,7 +210,7 @@ actor BitwardenAPI {
         case failed(String)
     }
 
-    /// bw login (비밀번호는 stdin으로 전달)
+    /// bw login (비밀번호는 BW_PASSWORD 환경변수로 전달 — CLI가 inquirer.js 대화형 프롬프트를 사용하므로 stdin 불가)
     func login(email: String, password: String, twoFactorCode: String? = nil) -> LoginResult {
         _ = runCLI(["logout"])
 
@@ -221,7 +221,7 @@ actor BitwardenAPI {
             args = ["login", email, "--raw"]
         }
 
-        let (stdout, stderr, exitCode) = runCLI(args, stdinInput: password)
+        let (stdout, stderr, exitCode) = runCLI(args, passwordEnv: password)
         let output = stdout?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let errorOutput = stderr?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
@@ -241,9 +241,9 @@ actor BitwardenAPI {
         return .failed(errorMsg)
     }
 
-    /// bw unlock (비밀번호는 stdin으로 전달) → 세션 토큰 반환
+    /// bw unlock (비밀번호는 BW_PASSWORD 환경변수로 전달) → 세션 토큰 반환
     func unlock(password: String) -> String? {
-        let (stdout, _, exitCode) = runCLI(["unlock", "--raw"], stdinInput: password)
+        let (stdout, _, exitCode) = runCLI(["unlock", "--raw"], passwordEnv: password)
         guard exitCode == 0,
               let output = stdout else { return nil }
 
@@ -381,8 +381,8 @@ actor BitwardenAPI {
 
     // MARK: - CLI 직접 호출 (login/unlock 전용)
 
-    /// CLI 실행 (비밀번호는 stdinInput으로 전달하여 프로세스 인자 노출 방지)
-    private func runCLI(_ args: [String], stdinInput: String? = nil) -> (stdout: String?, stderr: String?, exitCode: Int32) {
+    /// CLI 실행 (비밀번호는 BW_PASSWORD 환경변수로 전달 — ps 명령어에 노출되지 않음)
+    private func runCLI(_ args: [String], passwordEnv: String? = nil) -> (stdout: String?, stderr: String?, exitCode: Int32) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: bwPath)
         process.arguments = args
@@ -396,22 +396,16 @@ actor BitwardenAPI {
         if let token = sessionToken {
             env["BW_SESSION"] = token
         }
+        // bw CLI가 BW_PASSWORD 환경변수를 인식하여 대화형 프롬프트를 건너뜀
+        if let password = passwordEnv {
+            env["BW_PASSWORD"] = password
+        }
         process.environment = env
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
-
-        // 비밀번호를 stdin으로 전달 (프로세스 인자에 노출되지 않음)
-        if let input = stdinInput {
-            let stdinPipe = Pipe()
-            process.standardInput = stdinPipe
-            if let data = input.data(using: .utf8) {
-                stdinPipe.fileHandleForWriting.write(data)
-                stdinPipe.fileHandleForWriting.closeFile()
-            }
-        }
 
         do {
             try process.run()
