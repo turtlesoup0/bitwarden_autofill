@@ -225,8 +225,11 @@ actor BitwardenAPI {
         let output = stdout?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let errorOutput = stderr?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-        if errorOutput.contains("Two-step") || errorOutput.contains("two-step")
-            || errorOutput.contains("Additional authentication") {
+        // 2FA 필요 감지: CLI가 OTP를 대화형으로 요구하다 crash하는 경우도 포함
+        let combinedOutput = output + " " + errorOutput
+        if combinedOutput.contains("Two-step") || combinedOutput.contains("two-step")
+            || combinedOutput.contains("Additional authentication")
+            || combinedOutput.contains("ERR_USE_AFTER_CLOSE") {
             return .requires2FA
         }
 
