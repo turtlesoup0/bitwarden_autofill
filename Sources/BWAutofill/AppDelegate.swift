@@ -110,14 +110,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func loginVault() async {
         guard let api = bwAPI else { return }
 
-        // 이메일, 비밀번호, OTP를 한 번에 입력받음 (CLI가 2FA를 대화형으로 요청 시 crash 방지)
-        guard let credentials = promptLogin() else { return }
+        // 1단계: 이메일
+        guard let email = promptText(
+            message: "Bitwarden 로그인",
+            info: "이메일 주소를 입력하세요",
+            placeholder: "email@example.com",
+            secure: false
+        ), !email.isEmpty else { return }
+
+        // 2단계: 마스터 비밀번호
+        guard let password = promptText(
+            message: "Bitwarden 로그인",
+            info: "마스터 비밀번호를 입력하세요",
+            placeholder: "",
+            secure: true
+        ), !password.isEmpty else { return }
+
+        // 3단계: OTP 입력 (제출 직전에 확인 — TOTP 시간 유효성)
+        guard let code = promptText(
+            message: "2단계 인증",
+            info: "인증 앱의 6자리 코드를 입력하세요\n(2FA 미사용 시 빈 칸으로 확인)",
+            placeholder: "000000",
+            secure: false
+        ) else { return }
 
         let result: BitwardenAPI.LoginResult
-        if let code = credentials.otpCode, !code.isEmpty {
-            result = await api.login(email: credentials.email, password: credentials.password, twoFactorCode: code)
+        if code.isEmpty {
+            result = await api.login(email: email, password: password)
         } else {
-            result = await api.login(email: credentials.email, password: credentials.password)
+            result = await api.login(email: email, password: password, twoFactorCode: code)
         }
 
         switch result {
@@ -126,18 +147,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             showSearchPanel()
 
         case .requires2FA:
-            // OTP 없이 시도했다가 2FA 필요 → OTP만 추가 입력
-            guard let code = promptText(
-                message: "2단계 인증",
+            // OTP 없이 시도했으나 2FA 필요 → 재입력
+            guard let retryCode = promptText(
+                message: "2단계 인증 필요",
                 info: "인증 앱의 6자리 코드를 입력하세요",
                 placeholder: "000000",
                 secure: false
-            ), !code.isEmpty else { return }
+            ), !retryCode.isEmpty else { return }
 
-            let twoFAResult = await api.login(
-                email: credentials.email, password: credentials.password, twoFactorCode: code
-            )
-            if case .success(let token) = twoFAResult {
+            let retryResult = await api.login(email: email, password: password, twoFactorCode: retryCode)
+            if case .success(let token) = retryResult {
                 let _ = await api.startServe(sessionToken: token)
                 showSearchPanel()
             } else {
@@ -252,61 +271,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - UI 헬퍼
-
-    /// 로그인 자격 증명 (이메일 + 비밀번호 + OTP를 한 화면에서)
-    private struct LoginCredentials {
-        let email: String
-        let password: String
-        let otpCode: String?
-    }
-
-    private func promptLogin() -> LoginCredentials? {
-        let alert = NSAlert()
-        alert.messageText = "Bitwarden 로그인"
-        alert.informativeText = "2FA를 사용하는 경우 OTP도 입력하세요"
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "로그인")
-        alert.addButton(withTitle: "취소")
-
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 280, height: 100))
-
-        let emailLabel = NSTextField(labelWithString: "이메일")
-        emailLabel.frame = NSRect(x: 0, y: 76, width: 60, height: 20)
-        emailLabel.font = .systemFont(ofSize: 12)
-        let emailField = NSTextField(frame: NSRect(x: 65, y: 76, width: 215, height: 22))
-        emailField.placeholderString = "email@example.com"
-
-        let pwLabel = NSTextField(labelWithString: "비밀번호")
-        pwLabel.frame = NSRect(x: 0, y: 44, width: 60, height: 20)
-        pwLabel.font = .systemFont(ofSize: 12)
-        let pwField = NSSecureTextField(frame: NSRect(x: 65, y: 44, width: 215, height: 22))
-
-        let otpLabel = NSTextField(labelWithString: "OTP")
-        otpLabel.frame = NSRect(x: 0, y: 12, width: 60, height: 20)
-        otpLabel.font = .systemFont(ofSize: 12)
-        let otpField = NSTextField(frame: NSRect(x: 65, y: 12, width: 215, height: 22))
-        otpField.placeholderString = "6자리 (선택사항)"
-
-        container.addSubview(emailLabel)
-        container.addSubview(emailField)
-        container.addSubview(pwLabel)
-        container.addSubview(pwField)
-        container.addSubview(otpLabel)
-        container.addSubview(otpField)
-
-        alert.accessoryView = container
-        alert.window.initialFirstResponder = emailField
-
-        let response = alert.runModal()
-        guard response == .alertFirstButtonReturn else { return nil }
-
-        let email = emailField.stringValue.trimmingCharacters(in: .whitespaces)
-        let password = pwField.stringValue
-        let otp = otpField.stringValue.trimmingCharacters(in: .whitespaces)
-
-        guard !email.isEmpty, !password.isEmpty else { return nil }
-        return LoginCredentials(email: email, password: password, otpCode: otp.isEmpty ? nil : otp)
-    }
 
     private func promptText(message: String, info: String?, placeholder: String, secure: Bool) -> String? {
         let alert = NSAlert()
