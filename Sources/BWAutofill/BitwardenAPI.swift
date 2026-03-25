@@ -216,9 +216,9 @@ actor BitwardenAPI {
 
         var args: [String]
         if let code = twoFactorCode {
-            args = ["login", email, "--method", "0", "--code", code, "--raw"]
+            args = ["login", email, "--passwordenv", "BW_PASSWORD", "--method", "0", "--code", code, "--raw"]
         } else {
-            args = ["login", email, "--raw"]
+            args = ["login", email, "--passwordenv", "BW_PASSWORD", "--raw"]
         }
 
         let (stdout, stderr, exitCode) = runCLI(args, passwordEnv: password)
@@ -243,7 +243,7 @@ actor BitwardenAPI {
 
     /// bw unlock (비밀번호는 BW_PASSWORD 환경변수로 전달) → 세션 토큰 반환
     func unlock(password: String) -> String? {
-        let (stdout, _, exitCode) = runCLI(["unlock", "--raw"], passwordEnv: password)
+        let (stdout, _, exitCode) = runCLI(["unlock", "--passwordenv", "BW_PASSWORD", "--raw"], passwordEnv: password)
         guard exitCode == 0,
               let output = stdout else { return nil }
 
