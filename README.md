@@ -1,20 +1,22 @@
 # BW Autofill
 
-macOS 네이티브 Bitwarden 자동 입력 도구.
-1Password의 `Cmd+\` Quick Access 경험을 Bitwarden에서 구현합니다.
+A native macOS Bitwarden autofill tool.
+Brings the 1Password `Cmd+\` Quick Access experience to Bitwarden.
 
-## 사전 요구사항
+*한국어: [README.ko.md](README.ko.md)*
 
-- macOS 13 (Ventura) 이상
+## Requirements
+
+- macOS 13 (Ventura) or later
 - Bitwarden CLI (`bw`)
 
 ```bash
 brew install bitwarden-cli
 ```
 
-## 설치
+## Installation
 
-### 빌드 스크립트 (권장)
+### Build script (recommended)
 
 ```bash
 git clone https://github.com/turtlesoup0/bitwarden_autofill.git
@@ -22,60 +24,98 @@ cd bitwarden_autofill
 ./scripts/build.sh
 ```
 
-빌드 완료 후 `dist/BW Autofill.app`이 생성됩니다.
+The bundle is produced at `dist/BW Autofill.app`.
 
 ```bash
-# /Applications에 설치
+# Install to /Applications
 cp -r "dist/BW Autofill.app" /Applications/
 ```
 
-### 직접 빌드
+### Manual build
 
 ```bash
 swift build -c release
-# 바이너리: .build/release/BWAutofill
+# Binary: .build/release/BWAutofill
 ```
 
-## 사용 방법
+## Usage
 
-1. 앱 실행 → 메뉴바에 열쇠 아이콘 표시
-2. 최초 실행 시 메뉴에서 "Bitwarden 로그인" → 이메일 + 마스터 비밀번호 입력
-3. 로그인이 필요한 앱/브라우저에서 `Cmd+\` 입력
-4. 검색 패널에서 항목 선택 (Enter로 펼치기)
-5. ID 또는 Password 클릭 → 클립보드 복사 → 붙여넣기
+### First-time setup
 
-### 검색 패널 단축키
+1. **Log in from the terminal** (login runs in the CLI to avoid 2FA/interactive-prompt issues)
+   ```bash
+   bw login
+   ```
+2. Launch the app — a key icon appears in the menu bar.
+3. Menu → **Unlock Vault** (`⌘U`) → enter the master password.
+   - The session token is then stored encrypted in the Keychain and **auto-restored on the next `Cmd+\`**.
 
-| 키 | 동작 |
-|----|------|
-| ↑ ↓ | 항목 이동 |
-| Enter | 항목 펼치기/접기 |
-| Cmd+R | 새로고침 (Bitwarden 동기화) |
-| ESC | 닫기 |
+### Day-to-day
 
-### 앱 컨텍스트 자동 감지
+1. In any app or browser that needs a login, press `Cmd+\`.
+2. Pick an entry from the search panel (Enter to expand).
+3. Click ID or Password → copied to the clipboard → paste.
 
-Slack에서 `Cmd+\`를 누르면 자동으로 "slack" 검색어로 필터링됩니다.
-지원 앱: Slack, Spotify, Figma, Linear, Notion, GitHub, Teams, Discord, Zoom 등
+### Search panel shortcuts
 
-## 권한 설정
+| Key | Action |
+|-----|--------|
+| ↑ ↓ | Move selection |
+| Enter | Expand / collapse entry |
+| Cmd+R | Refresh (Bitwarden sync) |
+| ESC | Close panel |
 
-앱 최초 실행 시 **손쉬운 사용** 권한이 필요합니다:
+### App-context auto-detect
 
-**시스템 설정 → 개인 정보 보호 및 보안 → 손쉬운 사용** → 앱 허용
+Pressing `Cmd+\` while Slack is focused auto-fills the search with "slack".
+Supported apps include Slack, Spotify, Figma, Linear, Notion, GitHub, Teams, Discord, Zoom, and more.
 
-권한 허용 후 앱 재시작이 필요합니다.
+### Result ranking
 
-## 보안
+Results are sorted by match quality score:
 
-- 비밀번호를 프로세스 인자로 노출하지 않음 (stdin 파이프 전달)
-- `bw serve`는 `127.0.0.1`에만 바인딩 (외부 접근 차단)
-- 세션 토큰은 macOS Keychain에 암호화 저장 (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`)
-- 비밀번호 클립보드 복사 시 `org.nspasteboard.ConcealedType` 적용 (클립보드 히스토리 제외)
-- 클립보드 10초 후 자동 클리어
-- 환경변수 최소화 (PATH/HOME/BW_SESSION만 전달)
+| Match type | Score |
+|---|---|
+| Exact name match | 1000 |
+| Name prefix match | 500 |
+| Name substring match | 300 |
+| Username or URL only | 100 |
 
-## 동작 원리
+Ties preserve the original order (Swift stable sort).
+
+### Error feedback
+
+The search panel distinguishes connection and parsing failures:
+
+- **Vault not connected — unlock required**: `bw serve` is not running
+- **bw serve no response**: server is up but the HTTP call failed
+- **Failed to parse response**: JSON parsing error
+
+All errors can be retried with `⌘R`.
+
+### Hotkey registration failure
+
+If another app has already claimed `⌘\`, the menu-bar icon switches to `key.slash` and a warning item appears in the menu.
+
+## Permissions
+
+On first launch the app needs **Accessibility** permission:
+
+**System Settings → Privacy & Security → Accessibility** → enable the app.
+
+Restart the app after granting permission.
+
+## Security
+
+- Passwords are never exposed as process arguments (they go through the `BW_PASSWORD` environment variable, invisible to `ps`).
+- `bw serve` binds only to `127.0.0.1` (no external access).
+- Session tokens are stored encrypted in the macOS Keychain (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`).
+- Password copies are flagged with `org.nspasteboard.ConcealedType` so clipboard managers skip them.
+- The clipboard is auto-cleared 10 seconds after a copy.
+- **When the app quits, anything we copied that's still on the clipboard is cleared immediately** (matched by `changeCount`).
+- Only a minimal environment is passed to subprocesses (`PATH`, `HOME`, `BW_SESSION`, and `BW_PASSWORD` when needed).
+
+## How it works
 
 ```
             Cmd+\
@@ -90,24 +130,42 @@ BitwardenAPI SearchPanel AppContext
 (bw serve    (NSPanel    Detector
  REST API)   + SwiftUI)
               │
-              ▼ (항목 선택)
-         클립보드 복사
-     (Concealed + 10s 자동삭제)
+              ▼ (on selection)
+          Clipboard copy
+  (Concealed + 10s auto-clear
+   + cleared on app exit)
 ```
 
-## 프로젝트 구조
+### Concurrency model
+
+- `BitwardenAPI` is a Swift `actor` — internal state (`serveProcess`, `cachedItems`, `sessionToken`) is serialized.
+- All HTTP calls use the async `URLSession.data(for:)` API (no actor-thread blocking).
+- Subprocess waits use `Process.terminationHandler` + `withCheckedContinuation`.
+- App quit uses `applicationShouldTerminate` + `.terminateLater` to avoid UI freezes.
+
+## Project layout
 
 ```
 bitwarden_autofill/
 ├── Package.swift
 ├── Info.plist
-├── scripts/build.sh          # .app 번들 빌드 스크립트
+├── scripts/build.sh          # .app bundle build script
 └── Sources/BWAutofill/
-    ├── App.swift              # SwiftUI 앱 진입점
-    ├── AppDelegate.swift      # 메뉴바 + 이벤트 오케스트레이션
-    ├── HotkeyManager.swift    # Cmd+\ 글로벌 단축키 (Carbon)
-    ├── BitwardenAPI.swift     # bw serve REST API 클라이언트 (actor)
-    ├── AppContextDetector.swift # 현재 활성 앱 감지
-    ├── SearchPanel.swift      # Floating 검색 UI (NSPanel + SwiftUI)
-    └── SecurityManager.swift  # Keychain + 클립보드 보안
+    ├── App.swift              # SwiftUI app entry point
+    ├── AppDelegate.swift      # Menu bar + event orchestration
+    ├── HotkeyManager.swift    # Global Cmd+\ hotkey (Carbon)
+    ├── BitwardenAPI.swift     # bw serve REST client (actor)
+    ├── AppContextDetector.swift # Frontmost-app detection
+    ├── SearchPanel.swift      # Floating search UI (NSPanel + SwiftUI)
+    └── SecurityManager.swift  # Keychain + clipboard security
 ```
+
+## Design notes
+
+### Why does login happen in the terminal?
+
+`bw login` prompts for 2FA via an `inquirer.js` interactive prompt that is hard to drive reliably from a macOS app (you hit `ERR_USE_AFTER_CLOSE` and similar issues). `bw unlock` supports the non-interactive `--passwordenv` flag, so the app handles unlock itself.
+
+### Why `--passwordenv` instead of stdin?
+
+stdin injection is flaky across some `bw` versions (broken pipe on early close). The officially supported `BW_PASSWORD` environment variable is more reliable.
