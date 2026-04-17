@@ -61,6 +61,9 @@ enum SecurityManager {
 
     // MARK: - 클립보드 보안
 
+    /// 우리가 마지막으로 복사한 시점의 changeCount (앱 종료 시 클리어 판정에 사용)
+    private static var pendingClipboardChangeCount: Int?
+
     /// 클립보드에 텍스트를 설정하고 지정 시간 후 자동 삭제
     /// Concealed 타입을 사용하여 클립보드 히스토리 도구에 비밀번호가 기록되지 않도록 함
     static func secureClipboard(text: String, clearAfter seconds: TimeInterval = 10, concealed: Bool = false) {
@@ -76,12 +79,24 @@ enum SecurityManager {
 
         // 자동 클리어를 위한 변경 카운터 저장
         let changeCount = pasteboard.changeCount
+        pendingClipboardChangeCount = changeCount
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
             // changeCount가 동일한 경우에만 클리어 (사용자가 다른 것을 복사했으면 건드리지 않음)
             if pasteboard.changeCount == changeCount {
                 pasteboard.clearContents()
+                pendingClipboardChangeCount = nil
             }
         }
+    }
+
+    /// 앱 종료 시점에 우리가 복사한 내용이 아직 클립보드에 있으면 동기적으로 클리어
+    static func clearClipboardIfOurs() {
+        guard let expected = pendingClipboardChangeCount else { return }
+        let pasteboard = NSPasteboard.general
+        if pasteboard.changeCount == expected {
+            pasteboard.clearContents()
+        }
+        pendingClipboardChangeCount = nil
     }
 
     // MARK: - Accessibility 권한 확인

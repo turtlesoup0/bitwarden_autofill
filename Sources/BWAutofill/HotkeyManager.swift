@@ -20,7 +20,8 @@ class HotkeyManager {
         unregister()
     }
 
-    func register() {
+    @discardableResult
+    func register() -> Bool {
         // Carbon 이벤트 핸들러 등록
         var eventType = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard),
@@ -48,7 +49,7 @@ class HotkeyManager {
 
         guard status == noErr else {
             print("[HotkeyManager] 이벤트 핸들러 등록 실패: \(status)")
-            return
+            return false
         }
 
         // 핫키 등록 (ID: 1)
@@ -64,8 +65,10 @@ class HotkeyManager {
 
         if registerStatus == noErr {
             print("[HotkeyManager] Cmd+\\ 단축키 등록 완료")
+            return true
         } else {
             print("[HotkeyManager] 단축키 등록 실패: \(registerStatus)")
+            return false
         }
     }
 

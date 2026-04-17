@@ -19,7 +19,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeyManager = HotkeyManager { [weak self] in
             self?.handleHotkey()
         }
-        hotkeyManager?.register()
+        let registered = hotkeyManager?.register() ?? false
+        applyHotkeyRegistrationResult(registered)
 
         if !SecurityManager.checkAccessibilityPermission() {
             SecurityManager.requestAccessibilityPermission()
@@ -39,16 +40,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         #endif
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
-        // 동기적으로 bw serve 프로세스 종료 보장
-        if let api = bwAPI {
-            let semaphore = DispatchSemaphore(value: 0)
-            Task {
-                await api.stopServe()
-                semaphore.signal()
-            }
-            _ = semaphore.wait(timeout: .now() + 3)
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // 클립보드에 우리가 복사한 내용이 남아 있으면 먼저 제거 (비밀번호 유출 방지)
+        SecurityManager.clearClipboardIfOurs()
+
+        guard let api = bwAPI else { return .terminateNow }
+        Task { @MainActor in
+            await api.stopServe()
+            NSApp.reply(toApplicationShouldTerminate: true)
         }
+        return .terminateLater
     }
 
     private func setupStatusBar() {
@@ -91,6 +92,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem?.menu = menu
 
         Task { await updateStatus() }
+    }
+
+    /// 핫키 등록 결과를 UI에 반영
+    private func applyHotkeyRegistrationResult(_ success: Bool) {
+        guard !success else { return }
+
+        statusItem?.button?.image = NSImage(
+            systemSymbolName: "key.slash",
+            accessibilityDescription: "BW Autofill (단축키 등록 실패)"
+        )
+
+        guard let menu = statusItem?.menu, menu.item(withTag: 101) == nil else { return }
+        let warningItem = NSMenuItem(
+            title: "⚠️ 단축키 등록 실패 — ⌘\\ 이 다른 앱에서 사용 중",
+            action: nil,
+            keyEquivalent: ""
+        )
+        warningItem.tag = 101
+        // 상태 메뉴(tag 100) 바로 아래 삽입
+        let statusIndex = menu.indexOfItem(withTag: 100)
+        let insertIndex = statusIndex >= 0 ? statusIndex + 1 : 3
+        menu.insertItem(warningItem, at: insertIndex)
     }
 
     private func updateStatus() async {
@@ -161,9 +184,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func quitApp() {
-        if let api = bwAPI {
-            Task { await api.stopServe() }
-        }
+        // applicationShouldTerminate가 stopServe를 담당
         NSApp.terminate(nil)
     }
 

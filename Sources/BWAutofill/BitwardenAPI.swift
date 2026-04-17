@@ -15,6 +15,21 @@ enum VaultStatus {
     }
 }
 
+/// Vault 항목 로드 실패 원인
+enum LoadError: Error, LocalizedError {
+    case notServing
+    case httpFailure
+    case parseFailure
+
+    var errorDescription: String? {
+        switch self {
+        case .notServing: return "Vault 연결 안 됨 — 잠금 해제 필요"
+        case .httpFailure: return "bw serve 응답 없음"
+        case .parseFailure: return "응답 해석 실패"
+        }
+    }
+}
+
 /// Vault 항목 모델
 struct VaultItem: Codable, Identifiable {
     let id: String
@@ -36,25 +51,6 @@ struct VaultItem: Codable, Identifiable {
     struct URIInfo: Codable {
         let uri: String?
     }
-}
-
-/// bw serve 응답 래퍼
-private struct BWResponse<T: Codable>: Codable {
-    let success: Bool
-    let message: String?
-    let data: BWData<T>?
-}
-
-private struct BWData<T: Codable>: Codable {
-    let data: T?
-    let template: T?
-    let object: String?
-}
-
-/// bw serve status 응답용
-private struct BWStatusTemplate: Codable {
-    let status: String?
-    let userEmail: String?
 }
 
 /// bw serve REST API 클라이언트
@@ -93,8 +89,8 @@ actor BitwardenAPI {
     // MARK: - bw serve 프로세스 관리
 
     /// bw serve 시작 (세션 토큰으로 unlocked 상태)
-    func startServe(sessionToken: String) -> Bool {
-        stopServe()
+    func startServe(sessionToken: String) async -> Bool {
+        await stopServe()
         self.sessionToken = sessionToken
 
         let process = Process()
@@ -117,7 +113,7 @@ actor BitwardenAPI {
             try process.run()
             serveProcess = process
 
-            let ready = waitForServer(timeout: 5.0)
+            let ready = await waitForServer(timeout: 5.0)
             #if DEBUG
             if ready {
                 print("[BitwardenAPI] bw serve 시작됨 (port: \(port))")
@@ -125,7 +121,7 @@ actor BitwardenAPI {
                 print("[BitwardenAPI] bw serve 시작 타임아웃")
             }
             #endif
-            if !ready { stopServe() }
+            if !ready { await stopServe() }
             return ready
         } catch {
             #if DEBUG
@@ -136,24 +132,30 @@ actor BitwardenAPI {
     }
 
     /// bw serve 중지
-    func stopServe() {
-        if let process = serveProcess, process.isRunning {
-            process.terminate()
-            process.waitUntilExit()
-        }
+    func stopServe() async {
+        let processToStop = serveProcess
         serveProcess = nil
         cachedItems = nil
         cacheTimestamp = nil
+
+        guard let process = processToStop, process.isRunning else { return }
+        process.terminate()
+
+        // 최대 3초 대기 (actor 스레드 블로킹 없이 폴링)
+        for _ in 0..<30 {
+            if !process.isRunning { return }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
     }
 
     /// 서버 준비 대기
-    private func waitForServer(timeout: TimeInterval) -> Bool {
+    private func waitForServer(timeout: TimeInterval) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if httpGetSync(path: "/status") != nil {
+            if await httpGet(path: "/status") != nil {
                 return true
             }
-            Thread.sleep(forTimeInterval: 0.3)
+            try? await Task.sleep(nanoseconds: 300_000_000)
         }
         return false
     }
@@ -164,12 +166,12 @@ actor BitwardenAPI {
 
     // MARK: - 상태 관리
 
-    func getStatus() -> VaultStatus {
+    func getStatus() async -> VaultStatus {
         guard isServing else {
-            return getStatusViaCLI()
+            return await getStatusViaCLI()
         }
 
-        guard let data = httpGetSync(path: "/status") else {
+        guard let data = await httpGet(path: "/status") else {
             return .unauthenticated
         }
 
@@ -183,8 +185,8 @@ actor BitwardenAPI {
         return .unauthenticated
     }
 
-    private func getStatusViaCLI() -> VaultStatus {
-        let (output, _, _) = runCLI(["status"])
+    private func getStatusViaCLI() async -> VaultStatus {
+        let (output, _, _) = await runCLI(["status"])
         guard let output = output else { return .unauthenticated }
         if let data = output.data(using: .utf8),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -205,8 +207,8 @@ actor BitwardenAPI {
     // MARK: - 잠금해제 (로그인은 터미널에서 `bw login` 직접 수행)
 
     /// bw unlock (비밀번호는 BW_PASSWORD 환경변수로 전달) → 세션 토큰 반환
-    func unlock(password: String) -> String? {
-        let (stdout, _, exitCode) = runCLI(["unlock", "--passwordenv", "BW_PASSWORD", "--raw"], passwordEnv: password)
+    func unlock(password: String) async -> String? {
+        let (stdout, _, exitCode) = await runCLI(["unlock", "--passwordenv", "BW_PASSWORD", "--raw"], passwordEnv: password)
         guard exitCode == 0,
               let output = stdout else { return nil }
 
@@ -218,9 +220,9 @@ actor BitwardenAPI {
         return token
     }
 
-    func lock() {
-        stopServe()
-        _ = runCLI(["lock"])
+    func lock() async {
+        await stopServe()
+        _ = await runCLI(["lock"])
         sessionToken = nil
         SecurityManager.deleteSessionToken()
     }
@@ -231,121 +233,128 @@ actor BitwardenAPI {
 
     // MARK: - 데이터 조회 (REST API)
 
-    /// 로그인 항목 검색 (클라이언트 사이드 필터링)
-    func listItems(search: String?) -> [VaultItem] {
-        let allItems = loadAllItems()
+    /// 로그인 항목 검색 (클라이언트 사이드 필터링 + 점수 기반 정렬)
+    func listItems(search: String?) async throws -> [VaultItem] {
+        let allItems = try await loadAllItems()
 
         guard let search = search, !search.isEmpty else {
             return allItems
         }
 
         let query = search.lowercased()
-        return allItems.filter { item in
-            let targets = [
-                item.name,
-                item.username ?? "",
-                item.uri ?? ""
-            ]
-            return targets.contains { $0.lowercased().contains(query) }
+        let scored = allItems.compactMap { item -> (item: VaultItem, score: Int)? in
+            let score = Self.matchScore(for: item, query: query)
+            return score > 0 ? (item, score) : nil
         }
+        // Swift sorted(by:)는 stable 정렬 — 동점 시 원본 순서 유지
+        return scored
+            .sorted { $0.score > $1.score }
+            .map { $0.item }
     }
 
-    private func loadAllItems() -> [VaultItem] {
+    /// 검색어 매칭 점수 (0이면 제외)
+    /// 이름 정확 일치 > 접두사 > 부분 > username/uri 부분
+    private static func matchScore(for item: VaultItem, query: String) -> Int {
+        let name = item.name.lowercased()
+        if name == query { return 1000 }
+        if name.hasPrefix(query) { return 500 }
+        if name.contains(query) { return 300 }
+
+        let username = (item.username ?? "").lowercased()
+        let uri = (item.uri ?? "").lowercased()
+        if username.contains(query) || uri.contains(query) { return 100 }
+        return 0
+    }
+
+    private func loadAllItems() async throws -> [VaultItem] {
         if let cached = cachedItems,
            let timestamp = cacheTimestamp,
            Date().timeIntervalSince(timestamp) < cacheTTL {
             return cached
         }
 
-        guard let data = httpGetSync(path: "/list/object/items") else {
+        guard isServing else {
+            throw LoadError.notServing
+        }
+
+        guard let data = await httpGet(path: "/list/object/items") else {
             #if DEBUG
-            print("[BitwardenAPI] 항목 조회 실패")
+            print("[BitwardenAPI] 항목 조회 실패 (HTTP)")
             #endif
-            return []
+            throw LoadError.httpFailure
         }
 
         do {
-            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let success = json["success"] as? Bool, success,
-               let dataObj = json["data"] as? [String: Any],
-               let itemsArray = dataObj["data"] {
-                let itemsData = try JSONSerialization.data(withJSONObject: itemsArray)
-                let allItems = try JSONDecoder().decode([VaultItem].self, from: itemsData)
-                let loginItems = allItems.filter { $0.isLogin }
-                cachedItems = loginItems
-                cacheTimestamp = Date()
-                #if DEBUG
-                print("[BitwardenAPI] 로그인 항목 \(loginItems.count)개 로드 완료")
-                #endif
-                return loginItems
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let success = json["success"] as? Bool, success,
+                  let dataObj = json["data"] as? [String: Any],
+                  let itemsArray = dataObj["data"] else {
+                throw LoadError.parseFailure
             }
+            let itemsData = try JSONSerialization.data(withJSONObject: itemsArray)
+            let allItems = try JSONDecoder().decode([VaultItem].self, from: itemsData)
+            let loginItems = allItems.filter { $0.isLogin }
+            cachedItems = loginItems
+            cacheTimestamp = Date()
+            #if DEBUG
+            print("[BitwardenAPI] 로그인 항목 \(loginItems.count)개 로드 완료")
+            #endif
+            return loginItems
+        } catch let error as LoadError {
+            throw error
         } catch {
             #if DEBUG
             print("[BitwardenAPI] JSON 파싱 오류: \(error)")
             #endif
+            throw LoadError.parseFailure
         }
-        return []
     }
 
     /// 캐시 무효화 + Bitwarden 클라우드 동기화
-    func invalidateCache() {
+    func invalidateCache() async {
         cachedItems = nil
         cacheTimestamp = nil
 
         // bw serve에 클라우드 동기화 요청
         if isServing {
-            httpPostSync(path: "/sync")
+            _ = await httpPost(path: "/sync")
         }
     }
 
-    // MARK: - HTTP 클라이언트 (동기)
+    // MARK: - HTTP 클라이언트 (비동기)
 
-    private func httpGetSync(path: String) -> Data? {
+    private func httpGet(path: String) async -> Data? {
         guard let url = URL(string: baseURL + path) else { return nil }
-        let request = URLRequest(url: url)
-
-        let semaphore = DispatchSemaphore(value: 0)
-        var result: Data?
-
-        urlSession.dataTask(with: request) { data, response, _ in
-            if let data = data,
-               let httpResponse = response as? HTTPURLResponse,
-               httpResponse.statusCode == 200 {
-                result = data
+        do {
+            let (data, response) = try await urlSession.data(from: url)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                return nil
             }
-            semaphore.signal()
-        }.resume()
-
-        semaphore.wait()
-        return result
+            return data
+        } catch {
+            return nil
+        }
     }
 
-    @discardableResult
-    private func httpPostSync(path: String) -> Data? {
+    private func httpPost(path: String) async -> Data? {
         guard let url = URL(string: baseURL + path) else { return nil }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-
-        let semaphore = DispatchSemaphore(value: 0)
-        var result: Data?
-
-        urlSession.dataTask(with: request) { data, response, _ in
-            if let data = data,
-               let httpResponse = response as? HTTPURLResponse,
-               httpResponse.statusCode == 200 {
-                result = data
+        do {
+            let (data, response) = try await urlSession.data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                return nil
             }
-            semaphore.signal()
-        }.resume()
-
-        semaphore.wait()
-        return result
+            return data
+        } catch {
+            return nil
+        }
     }
 
     // MARK: - CLI 직접 호출 (login/unlock 전용)
 
     /// CLI 실행 (비밀번호는 BW_PASSWORD 환경변수로 전달 — ps 명령어에 노출되지 않음)
-    private func runCLI(_ args: [String], passwordEnv: String? = nil) -> (stdout: String?, stderr: String?, exitCode: Int32) {
+    private func runCLI(_ args: [String], passwordEnv: String? = nil) async -> (stdout: String?, stderr: String?, exitCode: Int32) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: bwPath)
         process.arguments = args
@@ -370,21 +379,25 @@ actor BitwardenAPI {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
-        do {
-            try process.run()
-            process.waitUntilExit()
-            let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            return (
-                String(data: stdoutData, encoding: .utf8),
-                String(data: stderrData, encoding: .utf8),
-                process.terminationStatus
-            )
-        } catch {
-            #if DEBUG
-            print("[BitwardenAPI] CLI 실행 오류: \(error)")
-            #endif
-            return (nil, nil, -1)
+        return await withCheckedContinuation { continuation in
+            process.terminationHandler = { proc in
+                let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                continuation.resume(returning: (
+                    String(data: stdoutData, encoding: .utf8),
+                    String(data: stderrData, encoding: .utf8),
+                    proc.terminationStatus
+                ))
+            }
+            do {
+                try process.run()
+            } catch {
+                #if DEBUG
+                print("[BitwardenAPI] CLI 실행 오류: \(error)")
+                #endif
+                process.terminationHandler = nil
+                continuation.resume(returning: (nil, nil, -1))
+            }
         }
     }
 }

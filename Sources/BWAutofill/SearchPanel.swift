@@ -129,16 +129,27 @@ class SearchPanelController {
 
 // MARK: - SearchViewModel
 
+enum LoadState {
+    case idle
+    case loading
+    case loaded([VaultItem])
+    case error(String)
+}
+
 @MainActor
 class SearchViewModel: ObservableObject {
     @Published var query: String {
         didSet { debounceSearch() }
     }
-    @Published var items: [VaultItem] = []
+    @Published var loadState: LoadState = .idle
     @Published var selectedIndex: Int = 0
     @Published var expandedItemId: String? = nil
-    @Published var isLoading = false
     @Published var copiedField: String? = nil
+
+    var items: [VaultItem] {
+        if case .loaded(let items) = loadState { return items }
+        return []
+    }
 
     private let bitwardenAPI: BitwardenAPI
     private let onDismiss: () -> Void
@@ -164,13 +175,18 @@ class SearchViewModel: ObservableObject {
     }
 
     func search() async {
-        isLoading = true
+        loadState = .loading
         let searchQuery = query.isEmpty ? nil : query
-        let results = await bitwardenAPI.listItems(search: searchQuery)
-        items = results
+        do {
+            let results = try await bitwardenAPI.listItems(search: searchQuery)
+            loadState = .loaded(results)
+        } catch let error as LoadError {
+            loadState = .error(error.errorDescription ?? "알 수 없는 오류")
+        } catch {
+            loadState = .error("알 수 없는 오류: \(error.localizedDescription)")
+        }
         selectedIndex = 0
         expandedItemId = nil
-        isLoading = false
     }
 
     func moveUp() {
@@ -254,44 +270,61 @@ struct SearchView: View {
             }
 
             // 결과 목록
-            if viewModel.isLoading {
+            switch viewModel.loadState {
+            case .loading:
                 ProgressView()
                     .frame(maxWidth: .infinity, minHeight: 100)
-            } else if viewModel.items.isEmpty {
-                Text(viewModel.query.isEmpty ? "Cmd+\\ 로 빠른 검색" : "결과 없음")
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 100)
-            } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 2) {
-                            ForEach(Array(viewModel.items.prefix(20).enumerated()), id: \.element.id) { idx, item in
-                                ItemRow(
-                                    item: item,
-                                    isSelected: idx == viewModel.selectedIndex,
-                                    isExpanded: viewModel.expandedItemId == item.id,
-                                    onTap: {
-                                        viewModel.selectedIndex = idx
-                                        viewModel.confirm()
-                                    },
-                                    onCopyUsername: {
-                                        if let username = item.username {
-                                            viewModel.copyToClipboard(username, fieldName: "ID")
+            case .error(let message):
+                VStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 24))
+                        .foregroundColor(.orange)
+                    Text(message)
+                        .font(.system(size: 12, weight: .medium))
+                        .multilineTextAlignment(.center)
+                    Text("⌘R 로 재시도")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                }
+                .padding()
+                .frame(maxWidth: .infinity, minHeight: 100)
+            case .idle, .loaded:
+                if viewModel.items.isEmpty {
+                    Text(viewModel.query.isEmpty ? "Cmd+\\ 로 빠른 검색" : "결과 없음")
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 100)
+                } else {
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(spacing: 2) {
+                                ForEach(Array(viewModel.items.prefix(20).enumerated()), id: \.element.id) { idx, item in
+                                    ItemRow(
+                                        item: item,
+                                        isSelected: idx == viewModel.selectedIndex,
+                                        isExpanded: viewModel.expandedItemId == item.id,
+                                        onTap: {
+                                            viewModel.selectedIndex = idx
+                                            viewModel.confirm()
+                                        },
+                                        onCopyUsername: {
+                                            if let username = item.username {
+                                                viewModel.copyToClipboard(username, fieldName: "ID")
+                                            }
+                                        },
+                                        onCopyPassword: {
+                                            if let password = item.password {
+                                                viewModel.copyToClipboard(password, fieldName: "Password", isSecret: true)
+                                            }
                                         }
-                                    },
-                                    onCopyPassword: {
-                                        if let password = item.password {
-                                            viewModel.copyToClipboard(password, fieldName: "Password", isSecret: true)
-                                        }
-                                    }
-                                )
-                                .id(idx)
+                                    )
+                                    .id(idx)
+                                }
                             }
+                            .padding(8)
                         }
-                        .padding(8)
-                    }
-                    .onChange(of: viewModel.selectedIndex) { newIndex in
-                        proxy.scrollTo(newIndex, anchor: .center)
+                        .onChange(of: viewModel.selectedIndex) { newIndex in
+                            proxy.scrollTo(newIndex, anchor: .center)
+                        }
                     }
                 }
             }
