@@ -16,6 +16,9 @@ echo "=== BW Autofill 빌드 시작 ==="
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
+# Spotlight/LaunchServices에서 빌드 산출물을 제외 (검색 결과 중복 방지)
+touch "$BUILD_DIR/.metadata_never_index"
+
 # Release 빌드
 echo "[1/4] Swift 빌드 (Release)..."
 cd "$PROJECT_DIR"
