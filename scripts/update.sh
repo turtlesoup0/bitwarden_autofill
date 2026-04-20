@@ -73,9 +73,19 @@ fi
 rm -rf "$TARGET_APP"
 cp -R "$REPO_DIR/dist/$APP_NAME" "$TARGET_APP"
 
+# LaunchServices에 번들 재등록 (방금 복사된 위치의 -600 에러 방지)
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [ -x "$LSREGISTER" ]; then
+    "$LSREGISTER" -f "$TARGET_APP" >/dev/null 2>&1 || true
+fi
+
 echo ""
 echo "🚀 새 앱 실행..."
-open "$TARGET_APP"
+# 첫 open은 LaunchServices 인덱싱 지연으로 -600을 반환할 수 있음 → 재시도
+if ! open "$TARGET_APP" 2>/dev/null; then
+    sleep 1
+    open "$TARGET_APP"
+fi
 
 echo ""
 echo "✅ 업데이트 완료"
