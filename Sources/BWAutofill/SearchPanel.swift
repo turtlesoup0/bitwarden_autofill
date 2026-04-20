@@ -52,13 +52,15 @@ class SearchPanelController {
     private var panel: SearchPanel?
     private var hostingView: NSHostingView<SearchView>?
     private let bitwardenAPI: BitwardenAPI
+    private let onRequestUnlock: () -> Void
     private var escMonitor: Any?
 
     // 호출 시점의 앱 컨텍스트 저장
     private var callerAppContext: AppContext?
 
-    init(bitwardenAPI: BitwardenAPI) {
+    init(bitwardenAPI: BitwardenAPI, onRequestUnlock: @escaping () -> Void) {
         self.bitwardenAPI = bitwardenAPI
+        self.onRequestUnlock = onRequestUnlock
     }
 
     @MainActor
@@ -81,6 +83,10 @@ class SearchPanelController {
             initialSearch: initialSearch,
             onDismiss: { [weak self] in
                 self?.hide()
+            },
+            onRequestUnlock: { [weak self] in
+                self?.hide()
+                self?.onRequestUnlock()
             }
         )
 
@@ -133,7 +139,8 @@ enum LoadState {
     case idle
     case loading
     case loaded([VaultItem])
-    case error(String)
+    /// 에러 메시지 + 잠금해제로 복구 가능한지 여부
+    case error(message: String, needsUnlock: Bool)
 }
 
 @MainActor
@@ -153,16 +160,19 @@ class SearchViewModel: ObservableObject {
 
     private let bitwardenAPI: BitwardenAPI
     private let onDismiss: () -> Void
+    private let onRequestUnlock: () -> Void
     private var searchTask: Task<Void, Never>?
 
     init(
         bitwardenAPI: BitwardenAPI,
         initialSearch: String,
-        onDismiss: @escaping () -> Void
+        onDismiss: @escaping () -> Void,
+        onRequestUnlock: @escaping () -> Void
     ) {
         self.query = initialSearch
         self.bitwardenAPI = bitwardenAPI
         self.onDismiss = onDismiss
+        self.onRequestUnlock = onRequestUnlock
     }
 
     private func debounceSearch() {
@@ -181,12 +191,28 @@ class SearchViewModel: ObservableObject {
             let results = try await bitwardenAPI.listItems(search: searchQuery)
             loadState = .loaded(results)
         } catch let error as LoadError {
-            loadState = .error(error.errorDescription ?? "알 수 없는 오류")
+            let needsUnlock: Bool
+            switch error {
+            case .notServing: needsUnlock = true
+            case .httpFailure, .parseFailure: needsUnlock = false
+            }
+            loadState = .error(
+                message: error.errorDescription ?? "알 수 없는 오류",
+                needsUnlock: needsUnlock
+            )
         } catch {
-            loadState = .error("알 수 없는 오류: \(error.localizedDescription)")
+            loadState = .error(
+                message: "알 수 없는 오류: \(error.localizedDescription)",
+                needsUnlock: false
+            )
         }
         selectedIndex = 0
         expandedItemId = nil
+    }
+
+    /// 잠금 해제 플로우 트리거 (검색 패널 닫고 메뉴 unlock 호출)
+    func requestUnlock() {
+        onRequestUnlock()
     }
 
     func moveUp() {
@@ -274,17 +300,28 @@ struct SearchView: View {
             case .loading:
                 ProgressView()
                     .frame(maxWidth: .infinity, minHeight: 100)
-            case .error(let message):
-                VStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
+            case .error(let message, let needsUnlock):
+                VStack(spacing: 10) {
+                    Image(systemName: needsUnlock ? "lock.fill" : "exclamationmark.triangle.fill")
                         .font(.system(size: 24))
-                        .foregroundColor(.orange)
+                        .foregroundColor(needsUnlock ? .accentColor : .orange)
                     Text(message)
                         .font(.system(size: 12, weight: .medium))
                         .multilineTextAlignment(.center)
-                    Text("⌘R 로 재시도")
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
+                    if needsUnlock {
+                        Button(action: { viewModel.requestUnlock() }) {
+                            Text("잠금 해제")
+                                .font(.system(size: 12, weight: .semibold))
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 5)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.defaultAction)
+                    } else {
+                        Text("⌘R 로 재시도")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                    }
                 }
                 .padding()
                 .frame(maxWidth: .infinity, minHeight: 100)

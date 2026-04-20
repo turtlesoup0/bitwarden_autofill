@@ -15,7 +15,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let api = BitwardenAPI()
         bwAPI = api
-        searchPanelController = SearchPanelController(bitwardenAPI: api)
+        searchPanelController = SearchPanelController(
+            bitwardenAPI: api,
+            onRequestUnlock: { [weak self] in
+                self?.unlockVaultMenu()
+            }
+        )
         hotkeyManager = HotkeyManager { [weak self] in
             self?.handleHotkey()
         }
@@ -27,10 +32,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Keychain에서 세션 복원 → bw serve 자동 시작
+        // stale 토큰이면 serve가 응답해도 unlocked 상태가 아님 → 토큰 무효화
         if let savedToken = SecurityManager.loadSessionToken() {
             Task {
                 await api.restoreSession(token: savedToken)
-                let _ = await api.startServe(sessionToken: savedToken)
+                let started = await api.startServe(sessionToken: savedToken)
+                if started {
+                    let status = await api.getStatus()
+                    if status != .unlocked {
+                        #if DEBUG
+                        print("[BWAutofill] 저장된 토큰이 stale — Keychain에서 제거")
+                        #endif
+                        SecurityManager.deleteSessionToken()
+                        await api.stopServe()
+                    }
+                } else {
+                    // serve 시작 실패 — 토큰이 완전히 무효하거나 환경 문제
+                    SecurityManager.deleteSessionToken()
+                }
                 await updateStatus()
             }
         }
@@ -219,6 +238,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         showSearchPanel()
                         return
                     }
+                    // serve는 떴지만 unlocked가 아님 → 토큰이 stale
+                    SecurityManager.deleteSessionToken()
+                    await api.stopServe()
+                } else {
+                    // serve 자체가 실패 → 토큰이 완전히 무효
+                    SecurityManager.deleteSessionToken()
                 }
             }
 
