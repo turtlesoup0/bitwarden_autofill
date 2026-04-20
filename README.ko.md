@@ -27,9 +27,12 @@ cd bitwarden_autofill
 빌드 완료 후 `dist/BW Autofill.app`이 생성됩니다.
 
 ```bash
-# /Applications에 설치
-cp -r "dist/BW Autofill.app" /Applications/
+# ~/Applications에 설치 (admin 비밀번호 불필요)
+mkdir -p ~/Applications
+cp -r "dist/BW Autofill.app" ~/Applications/
 ```
+
+`~/Applications` 설치를 권장합니다. 앱 내 **업데이트 실행…** 메뉴가 sudo 없이 번들을 교체할 수 있기 때문입니다. `/Applications`도 동작하지만 업데이트 시 관리자 권한이 필요합니다.
 
 ### 직접 빌드
 
@@ -96,6 +99,18 @@ Slack에서 `Cmd+\`를 누르면 자동으로 "slack" 검색어로 필터링됩�
 ### 핫키 등록 실패
 
 다른 앱이 `⌘\`를 이미 점유한 경우, 메뉴바 아이콘이 `🔑̶`(key.slash)로 바뀌고 메뉴에 경고가 표시됩니다.
+
+### 앱 내 업데이트 실행
+
+메뉴바 → **업데이트 실행…** 클릭 시 Terminal 세션이 열리며 아래를 자동 수행합니다:
+
+1. 선택한 소스 저장소에서 `git pull --ff-only`
+2. `./scripts/build.sh`
+3. 실행 중인 앱 종료 대기
+4. **현재 실행 중이던 위치**에 `.app` 번들 덮어쓰기
+5. 새 앱 실행
+
+첫 사용 시 로컬 `bitwarden_autofill` 저장소 폴더를 한 번 선택하면 UserDefaults에 경로가 기억됩니다. 앱이 로컬 빌드이므로 코드서명/공증 절차가 없고 Gatekeeper 대상이 아닙니다.
 
 ## 권한 설정
 

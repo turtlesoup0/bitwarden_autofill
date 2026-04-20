@@ -27,9 +27,12 @@ cd bitwarden_autofill
 The bundle is produced at `dist/BW Autofill.app`.
 
 ```bash
-# Install to /Applications
-cp -r "dist/BW Autofill.app" /Applications/
+# Install to ~/Applications (no admin password required)
+mkdir -p ~/Applications
+cp -r "dist/BW Autofill.app" ~/Applications/
 ```
+
+Installing to `~/Applications` is recommended so the in-app **Run Update…** menu can replace the bundle without sudo. `/Applications` still works but requires admin rights for updates.
 
 ### Manual build
 
@@ -96,6 +99,18 @@ All errors can be retried with `⌘R`.
 ### Hotkey registration failure
 
 If another app has already claimed `⌘\`, the menu-bar icon switches to `key.slash` and a warning item appears in the menu.
+
+### In-app update
+
+Menu bar → **Run Update…** triggers a Terminal session that:
+
+1. `git pull --ff-only` in the chosen source repo
+2. `./scripts/build.sh`
+3. Quits the running app and waits for it to exit
+4. Replaces the `.app` bundle **at its current location** (wherever it was running from)
+5. Relaunches
+
+On first use you'll be asked to pick your local `bitwarden_autofill` clone; the path is remembered in UserDefaults. Since the app bundle is locally built there is no code-signing/notarization workflow — Gatekeeper does not apply.
 
 ## Permissions
 

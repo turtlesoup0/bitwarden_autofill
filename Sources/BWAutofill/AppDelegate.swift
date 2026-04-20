@@ -85,6 +85,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        let updateItem = NSMenuItem(title: "업데이트 실행…", action: #selector(runUpdateMenu), keyEquivalent: "")
+        updateItem.target = self
+        menu.addItem(updateItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         let quitItem = NSMenuItem(title: "종료", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -276,5 +282,99 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alert.informativeText = message
         alert.alertStyle = .warning
         alert.runModal()
+    }
+
+    // MARK: - 업데이트
+
+    private static let repoPathKey = "updateRepoPath"
+
+    @objc private func runUpdateMenu() {
+        guard let repoPath = findOrAskRepoPath() else { return }
+
+        let scriptPath = (repoPath as NSString).appendingPathComponent("scripts/update.sh")
+        guard FileManager.default.fileExists(atPath: scriptPath) else {
+            showAlert(
+                title: "업데이트 불가",
+                message: "scripts/update.sh를 찾을 수 없습니다:\n\(scriptPath)\n\n최신 버전을 한 번 git pull 해주세요."
+            )
+            return
+        }
+
+        // 확인 다이얼로그
+        let confirm = NSAlert()
+        confirm.messageText = "업데이트 실행"
+        confirm.informativeText = "저장소:\n\(repoPath)\n\nTerminal에서 git pull → 빌드 → 앱 교체 → 재실행을 수행합니다. 잠시 후 현재 앱이 종료됩니다."
+        confirm.alertStyle = .informational
+        confirm.addButton(withTitle: "실행")
+        confirm.addButton(withTitle: "취소")
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+
+        // Terminal에서 스크립트 실행 (AppleScript)
+        // 현재 실행 중인 앱 번들 경로를 전달 → 같은 위치에 덮어쓰기
+        let currentAppPath = Bundle.main.bundlePath
+        let quotedScript = shellQuote(scriptPath)
+        let quotedRepo = shellQuote(repoPath)
+        let quotedAppPath = shellQuote(currentAppPath)
+        let command = "bash \(quotedScript) \(quotedRepo) \(quotedAppPath)"
+        // AppleScript 문자열 내의 따옴표 이스케이프
+        let escapedCommand = command.replacingOccurrences(of: "\\", with: "\\\\")
+                                    .replacingOccurrences(of: "\"", with: "\\\"")
+        let source = """
+        tell application "Terminal"
+            activate
+            do script "\(escapedCommand)"
+        end tell
+        """
+
+        guard let appleScript = NSAppleScript(source: source) else {
+            showAlert(title: "Terminal 실행 실패", message: "AppleScript 생성 실패")
+            return
+        }
+
+        var error: NSDictionary?
+        appleScript.executeAndReturnError(&error)
+        if let error = error {
+            showAlert(title: "Terminal 실행 실패", message: "\(error)")
+        }
+    }
+
+    /// UserDefaults에 저장된 경로를 확인, 없거나 무효하면 사용자에게 선택 요청
+    private func findOrAskRepoPath() -> String? {
+        if let saved = UserDefaults.standard.string(forKey: Self.repoPathKey),
+           isValidRepo(saved) {
+            return saved
+        }
+
+        let panel = NSOpenPanel()
+        panel.title = "bitwarden_autofill 저장소 선택"
+        panel.message = "업데이트를 수행할 bitwarden_autofill 저장소 폴더를 선택하세요 (.git 을 포함한 루트)"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "선택"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        let path = url.path
+
+        guard isValidRepo(path) else {
+            showAlert(
+                title: "올바른 저장소가 아님",
+                message: "선택한 폴더에 .git 이 없습니다:\n\(path)"
+            )
+            return nil
+        }
+
+        UserDefaults.standard.set(path, forKey: Self.repoPathKey)
+        return path
+    }
+
+    private func isValidRepo(_ path: String) -> Bool {
+        let gitPath = (path as NSString).appendingPathComponent(".git")
+        return FileManager.default.fileExists(atPath: gitPath)
+    }
+
+    /// 쉘 single-quote 이스케이프
+    private func shellQuote(_ s: String) -> String {
+        return "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }
