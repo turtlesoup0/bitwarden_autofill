@@ -309,33 +309,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         confirm.addButton(withTitle: "취소")
         guard confirm.runModal() == .alertFirstButtonReturn else { return }
 
-        // Terminal에서 스크립트 실행 (AppleScript)
+        // Apple Events 권한(자동화) 우회 — .command 파일을 Terminal에서 직접 열기
         // 현재 실행 중인 앱 번들 경로를 전달 → 같은 위치에 덮어쓰기
         let currentAppPath = Bundle.main.bundlePath
         let quotedScript = shellQuote(scriptPath)
         let quotedRepo = shellQuote(repoPath)
         let quotedAppPath = shellQuote(currentAppPath)
-        let command = "bash \(quotedScript) \(quotedRepo) \(quotedAppPath)"
-        // AppleScript 문자열 내의 따옴표 이스케이프
-        let escapedCommand = command.replacingOccurrences(of: "\\", with: "\\\\")
-                                    .replacingOccurrences(of: "\"", with: "\\\"")
-        let source = """
-        tell application "Terminal"
-            activate
-            do script "\(escapedCommand)"
-        end tell
+
+        let commandContents = """
+        #!/bin/bash
+        bash \(quotedScript) \(quotedRepo) \(quotedAppPath)
+        exit_code=$?
+        echo ""
+        if [ $exit_code -ne 0 ]; then
+            echo "❌ 업데이트 실패 (exit $exit_code). 위 로그를 확인해주세요."
+            echo ""
+            read -n 1 -s -r -p "아무 키나 눌러 창을 닫으세요..."
+        fi
         """
 
-        guard let appleScript = NSAppleScript(source: source) else {
-            showAlert(title: "Terminal 실행 실패", message: "AppleScript 생성 실패")
+        let tempDir = NSTemporaryDirectory()
+        let commandFile = (tempDir as NSString).appendingPathComponent("bw-autofill-update.command")
+
+        do {
+            try commandContents.write(toFile: commandFile, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: commandFile
+            )
+        } catch {
+            showAlert(title: "업데이트 파일 생성 실패", message: "\(error)")
             return
         }
 
-        var error: NSDictionary?
-        appleScript.executeAndReturnError(&error)
-        if let error = error {
-            showAlert(title: "Terminal 실행 실패", message: "\(error)")
-        }
+        // .command 확장자는 macOS에서 Terminal과 연결 — 권한 다이얼로그 없이 열림
+        NSWorkspace.shared.open(URL(fileURLWithPath: commandFile))
     }
 
     /// UserDefaults에 저장된 경로를 확인, 없거나 무효하면 사용자에게 선택 요청
