@@ -41,6 +41,14 @@ swift build -c release
 # Binary: .build/release/BWAutofill
 ```
 
+### Tests
+
+```bash
+./scripts/test.sh
+```
+
+Uses Swift Testing, so Xcode is not required. On a Command Line Tools-only setup, plain `swift test` can fail with `plugin for module 'TestingMacros' not found`; the script passes the plugin explicitly in that case. Tests run against a fake backend and never touch the real Keychain or `bw`.
+
 ## Usage
 
 ### First-time setup
@@ -114,11 +122,9 @@ On first use you'll be asked to pick your local `bitwarden_autofill` clone; the 
 
 ## Permissions
 
-On first launch the app needs **Accessibility** permission:
+No system permissions are required. The global hotkey uses Carbon `RegisterEventHotKey` and the app only copies to the clipboard, so **Accessibility** is not needed.
 
-**System Settings → Privacy & Security → Accessibility** → enable the app.
-
-Restart the app after granting permission.
+If you granted Accessibility to an older build, you can remove it under **System Settings → Privacy & Security → Accessibility**.
 
 ## Security
 
@@ -165,6 +171,8 @@ bitwarden_autofill/
 ├── Package.swift
 ├── Info.plist
 ├── scripts/build.sh          # .app bundle build script
+├── scripts/test.sh           # Test runner (works without Xcode)
+├── Tests/BWAutofillTests/    # Swift Testing unit tests
 └── Sources/BWAutofill/
     ├── App.swift              # SwiftUI app entry point
     ├── AppDelegate.swift      # Menu bar + event orchestration
@@ -172,6 +180,7 @@ bitwarden_autofill/
     ├── BitwardenAPI.swift     # bw serve REST client (actor)
     ├── AppContextDetector.swift # Frontmost-app detection
     ├── SearchPanel.swift      # Floating search UI (NSPanel + SwiftUI)
+    ├── UpdateRunner.swift     # In-app update (runs scripts/update.sh in Terminal)
     └── SecurityManager.swift  # Keychain + clipboard security
 ```
 

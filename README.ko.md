@@ -41,6 +41,14 @@ swift build -c release
 # 바이너리: .build/release/BWAutofill
 ```
 
+### 테스트
+
+```bash
+./scripts/test.sh
+```
+
+Swift Testing을 사용하므로 Xcode가 없어도 됩니다. Command Line Tools만 있는 환경에서는 그냥 `swift test`를 실행하면 `plugin for module 'TestingMacros' not found`로 실패할 수 있어, 스크립트가 플러그인을 직접 지정합니다. 테스트는 가짜 백엔드로 동작하므로 실제 Keychain이나 `bw`를 건드리지 않습니다.
+
 ## 사용 방법
 
 ### 최초 설정
@@ -114,11 +122,9 @@ Slack에서 `Cmd+\`를 누르면 자동으로 "slack" 검색어로 필터링됩�
 
 ## 권한 설정
 
-앱 최초 실행 시 **손쉬운 사용** 권한이 필요합니다:
+별도의 시스템 권한이 필요 없습니다. 전역 단축키는 Carbon `RegisterEventHotKey`를 사용하고 앱은 클립보드 복사만 하므로 **손쉬운 사용** 권한이 필요하지 않습니다.
 
-**시스템 설정 → 개인 정보 보호 및 보안 → 손쉬운 사용** → 앱 허용
-
-권한 허용 후 앱 재시작이 필요합니다.
+이전 버전에서 손쉬운 사용 권한을 허용했다면 **시스템 설정 → 개인 정보 보호 및 보안 → 손쉬운 사용**에서 제거해도 됩니다.
 
 ## 보안
 
@@ -165,6 +171,8 @@ bitwarden_autofill/
 ├── Package.swift
 ├── Info.plist
 ├── scripts/build.sh          # .app 번들 빌드 스크립트
+├── scripts/test.sh           # 테스트 실행 (Xcode 불필요)
+├── Tests/BWAutofillTests/    # Swift Testing 단위 테스트
 └── Sources/BWAutofill/
     ├── App.swift              # SwiftUI 앱 진입점
     ├── AppDelegate.swift      # 메뉴바 + 이벤트 오케스트레이션
@@ -172,6 +180,7 @@ bitwarden_autofill/
     ├── BitwardenAPI.swift     # bw serve REST API 클라이언트 (actor)
     ├── AppContextDetector.swift # 현재 활성 앱 감지
     ├── SearchPanel.swift      # Floating 검색 UI (NSPanel + SwiftUI)
+    ├── UpdateRunner.swift     # 앱 내 업데이트 (Terminal에서 scripts/update.sh 실행)
     └── SecurityManager.swift  # Keychain + 클립보드 보안
 ```
 

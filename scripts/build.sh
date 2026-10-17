@@ -6,8 +6,8 @@ BUILD_DIR="$PROJECT_DIR/dist"
 APP_NAME="BW Autofill"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
 
-# 매 빌드마다 바뀌는 ad-hoc 서명 CDHash 때문에 손쉬운 사용 권한이 매번 재요청되는
-# 문제를 피하기 위해, 로컬 Keychain에 한 번 생성한 자체 서명 인증서로 서명.
+# 매 빌드마다 바뀌는 ad-hoc 서명 CDHash 때문에 Keychain(세션 토큰) 접근 확인이 매번
+# 재요청되는 문제를 피하기 위해, 로컬 Keychain에 한 번 생성한 자체 서명 인증서로 서명.
 CODESIGN_IDENTITY="BW Autofill Self-Signed"
 
 echo "=== BW Autofill 빌드 시작 ==="
@@ -108,7 +108,7 @@ EOF
         -T /usr/bin/security >/dev/null 2>&1; then
         echo "  ✅ 자체 서명 인증서 생성 및 Keychain 등록 완료"
     else
-        echo "  ⚠️  인증서 등록 실패 — ad-hoc 서명으로 폴백 (권한이 빌드마다 재요청될 수 있음)"
+        echo "  ⚠️  인증서 등록 실패 — ad-hoc 서명으로 폴백 (Keychain 접근 확인이 빌드마다 재요청될 수 있음)"
         CODESIGN_IDENTITY="-"
     fi
 else
@@ -142,6 +142,3 @@ echo "  앱 경로: $APP_BUNDLE"
 echo ""
 echo "  설치 (권장, admin 불필요):"
 echo "    mkdir -p ~/Applications && cp -R \"$APP_BUNDLE\" ~/Applications/"
-echo ""
-echo "  실행 후 시스템 설정 > 개인정보 보호 > 손쉬운 사용에서 앱을 허용하세요."
-echo "  (자체 서명 인증서로 서명되므로 한 번 허용하면 이후 재빌드/업데이트에서 유지됩니다)"
