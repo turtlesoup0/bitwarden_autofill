@@ -158,6 +158,14 @@ class SearchViewModel: ObservableObject {
         return []
     }
 
+    /// 목록에 표시하는 최대 항목 수
+    static let maxVisibleItems = 20
+
+    /// 화면에 표시되는 항목 (선택 이동 · Enter 도 이 범위 안에서만 동작)
+    var visibleItems: [VaultItem] {
+        Array(items.prefix(Self.maxVisibleItems))
+    }
+
     private let bitwardenAPI: BitwardenAPI
     private let onDismiss: () -> Void
     private let onRequestUnlock: () -> Void
@@ -220,13 +228,14 @@ class SearchViewModel: ObservableObject {
     }
 
     func moveDown() {
-        if selectedIndex < items.count - 1 { selectedIndex += 1 }
+        if selectedIndex < visibleItems.count - 1 { selectedIndex += 1 }
     }
 
     /// Enter로 항목 펼치기/접기
     func confirm() {
-        guard !items.isEmpty, selectedIndex < items.count else { return }
-        let item = items[selectedIndex]
+        let visible = visibleItems
+        guard selectedIndex < visible.count else { return }
+        let item = visible[selectedIndex]
         if expandedItemId == item.id {
             expandedItemId = nil
         } else {
@@ -334,7 +343,7 @@ struct SearchView: View {
                     ScrollViewReader { proxy in
                         ScrollView {
                             LazyVStack(spacing: 2) {
-                                ForEach(Array(viewModel.items.prefix(20).enumerated()), id: \.element.id) { idx, item in
+                                ForEach(Array(viewModel.visibleItems.enumerated()), id: \.element.id) { idx, item in
                                     ItemRow(
                                         item: item,
                                         isSelected: idx == viewModel.selectedIndex,
