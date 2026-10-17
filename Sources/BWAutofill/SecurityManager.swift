@@ -98,17 +98,4 @@ enum SecurityManager {
         }
         pendingClipboardChangeCount = nil
     }
-
-    // MARK: - Accessibility 권한 확인
-
-    static func checkAccessibilityPermission() -> Bool {
-        return AXIsProcessTrusted()
-    }
-
-    /// 손쉬운 사용 권한 요청 (시스템 다이얼로그 표시)
-    static func requestAccessibilityPermission() {
-        // takeUnretainedValue: 소유권을 가져가지 않음 (시스템 소유 상수)
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
-        AXIsProcessTrustedWithOptions(options)
-    }
 }

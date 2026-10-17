@@ -13,6 +13,12 @@ let package = Package(
             linkerSettings: [
                 .unsafeFlags(["-framework", "Carbon"])
             ]
+        ),
+        // Swift Testing 사용 (Xcode 없이 Command Line Tools만으로 실행 가능)
+        .testTarget(
+            name: "BWAutofillTests",
+            dependencies: ["BWAutofill"],
+            path: "Tests/BWAutofillTests"
         )
     ]
 )

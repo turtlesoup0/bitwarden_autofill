@@ -27,31 +27,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let registered = hotkeyManager?.register() ?? false
         applyHotkeyRegistrationResult(registered)
 
-        if !SecurityManager.checkAccessibilityPermission() {
-            SecurityManager.requestAccessibilityPermission()
-        }
-
-        // Keychain에서 세션 복원 → bw serve 자동 시작
-        // stale 토큰이면 serve가 응답해도 unlocked 상태가 아님 → 토큰 무효화
-        if let savedToken = SecurityManager.loadSessionToken() {
-            Task {
-                await api.restoreSession(token: savedToken)
-                let started = await api.startServe(sessionToken: savedToken)
-                if started {
-                    let status = await api.getStatus()
-                    if status != .unlocked {
-                        #if DEBUG
-                        print("[BWAutofill] 저장된 토큰이 stale — Keychain에서 제거")
-                        #endif
-                        SecurityManager.deleteSessionToken()
-                        await api.stopServe()
-                    }
-                } else {
-                    // serve 시작 실패 — 토큰이 완전히 무효하거나 환경 문제
-                    SecurityManager.deleteSessionToken()
-                }
-                await updateStatus()
-            }
+        // Keychain에서 세션 복원 → bw serve 자동 시작 (stale 토큰은 resumeSession이 폐기)
+        Task {
+            _ = await api.resumeSession()
+            await updateStatus()
         }
 
         #if DEBUG
@@ -163,6 +142,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "확인")
         alert.addButton(withTitle: "터미널 열기")
 
+        bringToFront()
         let response = alert.runModal()
         if response == .alertSecondButtonReturn {
             // 터미널 열기
@@ -173,31 +153,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - 잠금 해제
 
     @objc private func unlockVaultMenu() {
-        Task {
-            guard let api = bwAPI else { return }
-            if let token = await unlockVault() {
-                let _ = await api.startServe(sessionToken: token)
-                showSearchPanel()
-            }
+        runVaultFlow { [weak self] in
+            await self?.unlockVaultAndShowPanel()
         }
     }
 
-    private func unlockVault() async -> String? {
-        guard let api = bwAPI else { return nil }
+    /// 마스터 비밀번호 입력 → 잠금 해제 + serve 기동 → 성공 시에만 검색 패널
+    private func unlockVaultAndShowPanel() async {
+        guard let api = bwAPI else { return }
 
         guard let password = promptText(
             message: "Bitwarden 마스터 비밀번호를 입력하세요",
             info: nil,
             placeholder: "",
             secure: true
-        ), !password.isEmpty else { return nil }
+        ), !password.isEmpty else { return }
 
-        let token = await api.unlock(password: password)
-        if token == nil {
-            showAlert(title: "잠금 해제 실패", message: "마스터 비밀번호가 올바르지 않습니다.")
-        }
+        let error = await api.unlockAndServe(password: password)
         await updateStatus()
-        return token
+        if let error {
+            showAlert(title: "잠금 해제 실패", message: error.errorDescription ?? "알 수 없는 오류")
+            return
+        }
+        showSearchPanel()
+    }
+
+    /// 잠금 해제 · 세션 복원 흐름 중복 실행 방지 (단축키 연타, 메뉴 동시 클릭)
+    private var isVaultFlowRunning = false
+
+    private func runVaultFlow(_ flow: @escaping @MainActor () async -> Void) {
+        guard !isVaultFlowRunning else { return }
+        isVaultFlowRunning = true
+        Task {
+            await flow()
+            isVaultFlowRunning = false
+        }
     }
 
     @objc private func lockVault() {
@@ -218,52 +208,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleHotkey() {
         guard let api = bwAPI else { return }
 
-        Task {
-            let isServing = await api.isServing
+        runVaultFlow { [weak self] in
+            guard let self else { return }
 
-            if isServing {
-                let status = await api.getStatus()
-                if status == .unlocked {
-                    showSearchPanel()
-                    return
-                }
-            }
-
-            // serve가 없으면 저장된 토큰으로 시작 시도
-            if !isServing, let savedToken = SecurityManager.loadSessionToken() {
-                let started = await api.startServe(sessionToken: savedToken)
-                if started {
-                    let status = await api.getStatus()
-                    if status == .unlocked {
-                        showSearchPanel()
-                        return
-                    }
-                    // serve는 떴지만 unlocked가 아님 → 토큰이 stale
-                    SecurityManager.deleteSessionToken()
-                    await api.stopServe()
-                } else {
-                    // serve 자체가 실패 → 토큰이 완전히 무효
-                    SecurityManager.deleteSessionToken()
-                }
+            switch await api.resumeSession() {
+            case .unlocked:
+                self.showSearchPanel()
+                return
+            case .serveFailed:
+                // 토큰은 유효할 수 있으므로 비밀번호를 다시 묻지 않고 원인만 안내
+                self.showAlert(
+                    title: "Vault 연결 실패",
+                    message: UnlockError.serveFailed.errorDescription ?? ""
+                )
+                await self.updateStatus()
+                return
+            case .noToken, .tokenExpired:
+                break
             }
 
             // 토큰이 없거나 만료된 경우
-            let status = await api.getStatus()
-            switch status {
+            switch await api.getStatus() {
             case .unauthenticated:
-                showLoginGuide()
-
-            case .locked:
-                if let token = await unlockVault() {
-                    let _ = await api.startServe(sessionToken: token)
-                    showSearchPanel()
-                }
-
-            case .unlocked:
-                if let token = SecurityManager.loadSessionToken() {
-                    let _ = await api.startServe(sessionToken: token)
-                }
-                showSearchPanel()
+                self.showLoginGuide()
+            case .locked, .unlocked:
+                await self.unlockVaultAndShowPanel()
             }
         }
     }
@@ -296,6 +265,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alert.accessoryView = input
         alert.window.initialFirstResponder = input
 
+        // 메뉴바 전용(accessory) 앱은 비활성 상태라 입력창이 키 윈도우가 되지 못하면
+        // 입력(마스터 비밀번호)이 이전 앱으로 들어갈 수 있음 → 모달 전에 활성화
+        bringToFront()
         let response = alert.runModal()
         guard response == .alertFirstButtonReturn else { return nil }
         return input.stringValue
@@ -306,108 +278,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alert.messageText = title
         alert.informativeText = message
         alert.alertStyle = .warning
+        bringToFront()
         alert.runModal()
+    }
+
+    /// 모달 다이얼로그가 키 입력을 받도록 앱 활성화
+    private func bringToFront() {
+        if #available(macOS 14.0, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 
     // MARK: - 업데이트
 
-    private static let repoPathKey = "updateRepoPath"
-
     @objc private func runUpdateMenu() {
-        guard let repoPath = findOrAskRepoPath() else { return }
-
-        let scriptPath = (repoPath as NSString).appendingPathComponent("scripts/update.sh")
-        guard FileManager.default.fileExists(atPath: scriptPath) else {
-            showAlert(
-                title: "업데이트 불가",
-                message: "scripts/update.sh를 찾을 수 없습니다:\n\(scriptPath)\n\n최신 버전을 한 번 git pull 해주세요."
-            )
-            return
-        }
-
-        // 확인 다이얼로그
-        let confirm = NSAlert()
-        confirm.messageText = "업데이트 실행"
-        confirm.informativeText = "저장소:\n\(repoPath)\n\nTerminal에서 git pull → 빌드 → 앱 교체 → 재실행을 수행합니다. 잠시 후 현재 앱이 종료됩니다."
-        confirm.alertStyle = .informational
-        confirm.addButton(withTitle: "실행")
-        confirm.addButton(withTitle: "취소")
-        guard confirm.runModal() == .alertFirstButtonReturn else { return }
-
-        // Apple Events 권한(자동화) 우회 — .command 파일을 Terminal에서 직접 열기
-        // 현재 실행 중인 앱 번들 경로를 전달 → 같은 위치에 덮어쓰기
-        let currentAppPath = Bundle.main.bundlePath
-        let quotedScript = shellQuote(scriptPath)
-        let quotedRepo = shellQuote(repoPath)
-        let quotedAppPath = shellQuote(currentAppPath)
-
-        let commandContents = """
-        #!/bin/bash
-        bash \(quotedScript) \(quotedRepo) \(quotedAppPath)
-        exit_code=$?
-        echo ""
-        if [ $exit_code -ne 0 ]; then
-            echo "❌ 업데이트 실패 (exit $exit_code). 위 로그를 확인해주세요."
-            echo ""
-            read -n 1 -s -r -p "아무 키나 눌러 창을 닫으세요..."
-        fi
-        """
-
-        let tempDir = NSTemporaryDirectory()
-        let commandFile = (tempDir as NSString).appendingPathComponent("bw-autofill-update.command")
-
-        do {
-            try commandContents.write(toFile: commandFile, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o755],
-                ofItemAtPath: commandFile
-            )
-        } catch {
-            showAlert(title: "업데이트 파일 생성 실패", message: "\(error)")
-            return
-        }
-
-        // .command 확장자는 macOS에서 Terminal과 연결 — 권한 다이얼로그 없이 열림
-        NSWorkspace.shared.open(URL(fileURLWithPath: commandFile))
-    }
-
-    /// UserDefaults에 저장된 경로를 확인, 없거나 무효하면 사용자에게 선택 요청
-    private func findOrAskRepoPath() -> String? {
-        if let saved = UserDefaults.standard.string(forKey: Self.repoPathKey),
-           isValidRepo(saved) {
-            return saved
-        }
-
-        let panel = NSOpenPanel()
-        panel.title = "bitwarden_autofill 저장소 선택"
-        panel.message = "업데이트를 수행할 bitwarden_autofill 저장소 폴더를 선택하세요 (.git 을 포함한 루트)"
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.prompt = "선택"
-
-        guard panel.runModal() == .OK, let url = panel.url else { return nil }
-        let path = url.path
-
-        guard isValidRepo(path) else {
-            showAlert(
-                title: "올바른 저장소가 아님",
-                message: "선택한 폴더에 .git 이 없습니다:\n\(path)"
-            )
-            return nil
-        }
-
-        UserDefaults.standard.set(path, forKey: Self.repoPathKey)
-        return path
-    }
-
-    private func isValidRepo(_ path: String) -> Bool {
-        let gitPath = (path as NSString).appendingPathComponent(".git")
-        return FileManager.default.fileExists(atPath: gitPath)
-    }
-
-    /// 쉘 single-quote 이스케이프
-    private func shellQuote(_ s: String) -> String {
-        return "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        UpdateRunner(showAlert: { [weak self] title, message in
+            self?.showAlert(title: title, message: message)
+        }).run()
     }
 }
