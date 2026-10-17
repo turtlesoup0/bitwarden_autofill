@@ -58,6 +58,10 @@ while pgrep -x "BWAutofill" > /dev/null; do
     fi
 done
 
+# 강제 종료되면 앱이 띄운 bw serve 가 고아로 남아 포트를 점유함 → 함께 정리
+# (새 앱도 시작 시 정리하지만, 잠금 해제된 serve 를 오래 남겨두지 않기 위해 즉시 종료)
+pkill -f "bw serve --hostname 127.0.0.1 --port 8087" 2>/dev/null || true
+
 echo ""
 echo "📦 앱 교체: $TARGET_APP"
 TARGET_DIR="$(dirname "$TARGET_APP")"
